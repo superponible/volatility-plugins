@@ -8,3 +8,8 @@ uninstallinfo.py - Dumps HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstal
 prefetch.py - scan memory for prefecth files and dump filename and timestamps
 
 idxparser.py - scan memory Java IDX files and extract details
+
+firefoxhistory.py - firefoxhistory, firefoxcookies, and firefoxdownloads plugins to extract the following firefox history data 
+moz_places 
+moz_cookies
+moz_downloads 
