@@ -258,22 +258,20 @@ def sec4_parse(idx_buff, sec2_len, sec3_len, sec4_len):
                 sec4[fields] += block_raw
             else:
                 sec4[fields] = "Unknown serialization opcode found: 0x{0:X}".format(sec4_type)
-                # Uncomment the following line to stop processing after too many unknown bytes
-                # unknowns += 1
+                if self._config.UNKNOWN:
+                    unknowns += 1
             fields += 1
             sec4["fields"] += 1
     return sec4
 
 class IDXParser(common.AbstractWindowsCommand):
     """ Scans for and parses Java IDX files """
-    #@staticmethod
-    #def is_valid_profile(profile):
-        #return (profile.metadata.get('os', 'unknown') == 'windows' and
-                #(profile.metadata.get('major') == 5 or
-                 #profile.metadata.get('major') == 6))
 
     def __init__(self, config, *args, **kwargs):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
+        config.add_option('UNKNOWN', short_option = 'U', default = False,
+                          help = "Limit number of section 4 unknown opcodes to print",
+                          action = "store_true")
 
     def calculate(self):
         address_space = utils.load_as(self._config, astype = 'physical')
