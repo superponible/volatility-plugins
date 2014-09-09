@@ -26,6 +26,11 @@
 # - http://forensicsfromthesausagefactory.blogspot.com/2011/04/carving-sqlite-databases-from.html
 # - http://forensicsfromthesausagefactory.blogspot.in/2011/05/analysis-of-record-structure-within.html
 
+# The following links are useful for information on decrypting cookies
+# - http://n8henrie.com/2014/05/decrypt-chrome-cookies-with-python/
+# - https://gist.github.com/DakuTree/98c8362fb424351b803e
+# - https://stackoverflow.com/questions/23153159/decrypting-chrome-iums-cookies/23727331#23727331
+
 import volatility.plugins.common as common
 import volatility.scan as scan
 import volatility.utils as utils
@@ -43,33 +48,23 @@ BACKWARD = sqlite_help.BACKWARD
 
 # Function to get rid of padding
 def clean(x): 
+    """Strip the padding from the end of the AES decrypted string"""
     return x[:-ord(x[-1])]
 
-# TODO
-# https://stackoverflow.com/questions/23153159/decrypting-chrome-iums-cookies/23727331#23727331
-def decrypt_cookie_value(x):
-    # replace with your encrypted_value from sqlite3
+def decrypt_cookie_value(x, key):
+    """Decrypts a cookie using the key provided"""
     encrypted_value = x
 
     # Trim off the 'v10' that Chrome/ium prepends
     encrypted_value = encrypted_value[3:]
 
     # Default values used by both Chrome and Chromium in OSX and Linux
-    salt = b'saltysalt'
     iv = b' ' * 16
-    length = 16
 
-    # On Mac, replace MY_PASS with your password from Keychain
-    # On Linux, replace MY_PASS with 'peanuts'
-    my_pass = "MY_PASS"
-    my_pass = my_pass.encode('utf8')
-
-    # 1003 on Mac, 1 on Linux
-    iterations = 1003
-
-    key = PBKDF2(my_pass, salt, length, iterations)
     cipher = AES.new(key, AES.MODE_CBC, IV=iv)
 
+    if len(encrypted_value) % 16:
+        return "INVALID_ENCRYPTED_LENGTH"
     decrypted = cipher.decrypt(encrypted_value)
     return clean(decrypted)
 
@@ -713,6 +708,36 @@ class ChromeCookies(common.AbstractWindowsCommand):
 
     def __init__(self, config, *args, **kwargs):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
+        config.add_option('KEY', short_option = 'K', default = False,
+                          help = "Password to generate PBKDF key to decrypt cookies",
+                          action = "store")
+        config.add_option('OS', short_option = 'O', default = False,
+                          help = "Manually specify OS, rather than obtaining from profile",
+                          choices = ('mac','linux','windows'),
+                          action = "store")
+
+        self.key = False
+        if self._config.OS:
+            os = self._config.OS
+        else:
+            addr_space = utils.load_as(self._config)
+            os = addr_space.profile.metadata.get('os', 'unknown')
+        if os == 'mac' and self._config.KEY:
+            salt = b'saltysalt'
+            length = 16
+            iterations = 1003
+            self.key = PBKDF2(self._config.KEY, salt, length, iterations)
+        elif os == 'linux':
+            salt = b'saltysalt'
+            length = 16
+            iterations = 1
+            self.key = PBKDF2(b'peanuts', salt, length, iterations)
+
+    @staticmethod
+    def is_valid_profile(profile):
+        return (profile.metadata.get('os', 'unknown') == 'windows' or
+                profile.metadata.get('os', 'unknown') == 'mac' or
+                profile.metadata.get('os', 'unknown') == 'linux')
 
     def calculate(self):
         address_space = utils.load_as(self._config, astype = 'physical')
@@ -722,7 +747,7 @@ class ChromeCookies(common.AbstractWindowsCommand):
                                           ])
         cookies = {}
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-20, 768)
+            chrome_buff = address_space.read(offset-20, 4096)
             start = 20
 
             # start from before the needle match and go backwards
@@ -829,8 +854,9 @@ class ChromeCookies(common.AbstractWindowsCommand):
 
             if encrypted_value_length > 0:
                 encrypted_value = chrome_buff[start:start+encrypted_value_length]
+                if encrypted_value[:3] == b'v10' and self.key:
+                    value = decrypt_cookie_value(encrypted_value, self.key)
                 encrypted_value = binascii.b2a_hex(encrypted_value)
-                #encrypted_value = decrypt_cookie_value(encrypted_value) #TODO -- just print the ASCII Hex of the encrypted value for now
                 start += encrypted_value_length
 
             # store the values as a tuple in a dictionary so we only print each record once
