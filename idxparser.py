@@ -130,7 +130,7 @@ def sec2_parse_old(idx_buff):
     start += __602BUFFER__
     sec2_fields = struct.unpack(">l", idx_buff[start:start+4])[0]
     start += 4
-    sec2["fields"] = fields
+    sec2["fields"] = sec2_fields
 
     # parse out the number of fields speified, each set contains a length then the field itself
     # store them into the dictionary with their field number as key
@@ -258,20 +258,20 @@ def sec4_parse(idx_buff, sec2_len, sec3_len, sec4_len):
                 sec4[fields] += block_raw
             else:
                 sec4[fields] = "Unknown serialization opcode found: 0x{0:X}".format(sec4_type)
-                if self._config.UNKNOWN:
-                    unknowns += 1
             fields += 1
             sec4["fields"] += 1
     return sec4
 
 class IDXParser(common.AbstractWindowsCommand):
     """ Scans for and parses Java IDX files """
+    #@staticmethod
+    #def is_valid_profile(profile):
+        #return (profile.metadata.get('os', 'unknown') == 'windows' and
+                #(profile.metadata.get('major') == 5 or
+                 #profile.metadata.get('major') == 6))
 
     def __init__(self, config, *args, **kwargs):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
-        config.add_option('UNKNOWN', short_option = 'U', default = False,
-                          help = "Limit number of section 4 unknown opcodes to print",
-                          action = "store_true")
 
     def calculate(self):
         address_space = utils.load_as(self._config, astype = 'physical')
@@ -287,6 +287,7 @@ class IDXParser(common.AbstractWindowsCommand):
                                         #'\x00\x00\x00\x00\x02\x5e\x00',
                                        ])
         idx_files = []
+        print "Scanning for IDX files, this can take a while............."
         print "-" * 80
         for offset in scanner.scan(address_space):
             # create a dictionary to hold IDX info
@@ -336,6 +337,10 @@ class IDXParser(common.AbstractWindowsCommand):
                     sec3_len = 0
                     sec4_len = 0
                     sec5_len = 0
+                    sec1["sec2_len"] = sec2_len
+                    sec1["sec3_len"] = sec3_len
+                    sec1["sec4_len"] = sec4_len
+                    sec1["sec5_len"] = sec5_len
                 elif version in [603, 604, 605]:
                     known_to_be_signed = idx_buff[start]
                     start += 1
@@ -410,21 +415,6 @@ class IDXParser(common.AbstractWindowsCommand):
             if idx["sec1"]["validation"] and idx["version"] > 602: #While 6.02 technically supports this, every sample I've seen just has 3 null bytes and skips to Section 2
                 print "Validation date: {0:s} (epoch: {1:d})".format(time.strftime("%a, %d %b %Y %X GMT", time.gmtime(idx["sec1"]["validation"])), idx["sec1"]["validation"])
 
-            print "Section 2 length: {}".format(idx["sec1"]["sec2_len"])
-            if idx["sec1"]["sec3_len"]: print "Section 3 length: {}".format(idx["sec1"]["sec3_len"])
-            if idx["sec1"]["sec4_len"]: print "Section 4 length: {}".format(idx["sec1"]["sec4_len"])
-            if idx["sec1"]["sec5_len"]: print "Section 5 length: {}".format(idx["sec1"]["sec5_len"])
-
-            if idx["sec1"]["expiration"]:
-                try:
-                    print "Blacklist Expiration date: {0:s} (epoch: {1:d})".format(time.strftime("%a, %d %b %Y %X GMT", time.gmtime(idx["sec1"]["blacklist_timestamp"])), idx["sec1"]["blacklist_timestamp"])
-                except ValueError as e:
-                    print "Blacklist Expiration date out of range (epoch: {0:d})".format(idx["sec1"]["blacklist_timestamp"])
-            if idx["sec1"]["cert_expiration_date"]:
-                try:
-                    print "Certificate Expiration date: {0:s} (epoch: {1:d})".format(time.strftime("%a, %d %b %Y %X GMT", time.gmtime(idx["sec1"]["cert_expiration_date"])), idx["sec1"]["cert_expiration_date"])
-                except ValueError as e:
-                    print "Certificate Expiration date out of range (epoch: {0:d})".format(idx["sec1"]["cert_expiration_date"])
 
             if idx["sec1"]["sec2_len"]:
                 if idx["version"] == 602: 
@@ -446,6 +436,22 @@ class IDXParser(common.AbstractWindowsCommand):
                                 print "Unknown serialization opcode found: 0x{0:X}".format(sec4_type)
                 else:
                     # Versions > 602
+                    print "Section 2 length: {}".format(idx["sec1"]["sec2_len"])
+                    if idx["sec1"]["sec3_len"]: print "Section 3 length: {}".format(idx["sec1"]["sec3_len"])
+                    if idx["sec1"]["sec4_len"]: print "Section 4 length: {}".format(idx["sec1"]["sec4_len"])
+                    if idx["sec1"]["sec5_len"]: print "Section 5 length: {}".format(idx["sec1"]["sec5_len"])
+        
+                    if idx["sec1"]["expiration"]:
+                        try:
+                            print "Blacklist Expiration date: {0:s} (epoch: {1:d})".format(time.strftime("%a, %d %b %Y %X GMT", time.gmtime(idx["sec1"]["blacklist_timestamp"])), idx["sec1"]["blacklist_timestamp"])
+                        except ValueError as e:
+                            print "Blacklist Expiration date out of range (epoch: {0:d})".format(idx["sec1"]["blacklist_timestamp"])
+                    if idx["sec1"]["cert_expiration_date"]:
+                        try:
+                            print "Certificate Expiration date: {0:s} (epoch: {1:d})".format(time.strftime("%a, %d %b %Y %X GMT", time.gmtime(idx["sec1"]["cert_expiration_date"])), idx["sec1"]["cert_expiration_date"])
+                        except ValueError as e:
+                            print "Certificate Expiration date out of range (epoch: {0:d})".format(idx["sec1"]["cert_expiration_date"])
+
                     print "\n[*] Section 2 (Download History) found:"
                     print "URL: {}".format(idx["sec2"]["data_URL"])
                     print "IP: {}".format(idx["sec2"]["data_IP"])
