@@ -13,3 +13,15 @@ firefoxhistory.py - firefoxhistory, firefoxcookies, and firefoxdownloads plugins
 moz_places, 
 moz_cookies, and
 moz_downloads 
+
+chromehistory.py - chromehistory, chromevisits, chromesearchterms, chromedownloads, chromedownloadchains, and chromecookies plugins to extract Chrome SQLite artifacts
+
+sqlite_help.py - supporting functions SQLite used in Firefox and Chrome plugins
+
+trustrecords.py - extract Office TrustRecords registry key information
+
+ssdeepscan.py - like yarascan, but searches for pages matching an ssdeep hash
+
+malfinddeep.py - whitelist code found by malfind based on an ssdeep hash
+
+apihooksdeep.py - whitelist code found by apihooks based on an ssdeep hash
