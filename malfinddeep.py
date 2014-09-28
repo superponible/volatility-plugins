@@ -106,6 +106,7 @@ class MalfindDeep(malfind.Malfind):
                             outfd.write("Injection is {0}% similar to whitelist hook {1}\n".format(alike, whitelist_name))
                             #outfd.write("  hook: {0}\n".format(inject_hash))
                             #outfd.write("  whitelist: {0}\n".format(whitelist_hash))
+                            outfd.write("\n")
                             skip = True
                             continue
                     if skip:
