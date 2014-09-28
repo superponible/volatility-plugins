@@ -1,5 +1,6 @@
 #Volatility plugin code:
 #Copyright [2014] [Dave Lassalle (@superponible) <dave@superponible.comn>]
+# Donated under Volatility Foundation, Inc. Individual Contributor Licensing Agreement
 #
 #IDX parsing code based on Brian Baskin's IDX Parser https://github.com/Rurik/Java_IDX_Parser/
 #Copyright [2013] Brian Baskin

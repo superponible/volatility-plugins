@@ -1,4 +1,5 @@
 # Copyright (C) 2013 Dave Lassalle (@superponible) <dave@superponible.com>
+# Donated under Volatility Foundation, Inc. Individual Contributor Licensing Agreement
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by

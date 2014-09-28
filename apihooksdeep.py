@@ -1,6 +1,7 @@
 # Volatility
 # Copyright (C) 2007-2013 Volatility Foundation
 # Copyright (c) 2014 Dave Lassalle <dave@superponible.com>
+# Donated under Volatility Foundation, Inc. Individual Contributor Licensing Agreement
 #
 # This file is part of Volatility.
 #
