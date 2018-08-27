@@ -223,7 +223,7 @@ class PrefetchScanner(scan.BaseScanner):
     def load_libmscompression(self):
         if os.name == 'nt':
             if sizeof(c_void_p) == 8:
-                lib_names = ('MSCompression','MSCompression64')
+                lib_names = ('MSCompression64',)
             else:
                 lib_names = ('MSCompression',)
         else:
@@ -267,13 +267,14 @@ class PrefetchScanner(scan.BaseScanner):
     def carve_mam(self, address_space, offset, dump_dir):
         mam_buff = address_space.read(offset, 4096)
 
-        mam_file = os.path.abspath(os.path.join(dump_dir, "mam-pf-{0:04d}.pf".format(self.file_num)))
-        with open(mam_file, 'wb') as f:
-            try:
-                f.write(mam_buff)
-                self.file_num += 1
-            except IOError as e:
-                debug.error("Cannot write to {0} : {1}".format(mam_file, e))
+        if dump_dir:
+            mam_file = os.path.abspath(os.path.join(dump_dir, "mam-pf-{0:04d}.pf".format(self.file_num)))
+            with open(mam_file, 'wb') as f:
+                try:
+                    f.write(mam_buff)
+                    self.file_num += 1
+                except IOError as e:
+                    debug.error("Cannot write to {0} : {1}".format(mam_file, e))
 
         mam_buff = self.mam_decompress(mam_buff)
         if mam_buff < 0:
@@ -366,7 +367,8 @@ class PrefetchParser(common.AbstractWindowsCommand):
         config.add_option('FULL_PATHS', default = False,
                           help = 'Print the full path the Prefetch file translates to, if possible.',
                           action = "store_true")
-        config.add_option('MAM-DIR', default = './mam-pf/',
+#        config.add_option('MAM_DIR', default = './mam-pf/',
+        config.add_option('MAM_DIR',
                           help = 'Directory which to dump MAM Compressed Prefetch.')
 
     def calculate(self):
@@ -382,8 +384,8 @@ class PrefetchParser(common.AbstractWindowsCommand):
         if(address_space.profile.metadata.get('major') == 6 and address_space.profile.metadata.get('minor') == 4): # Win10
             scanner_mam.load_libmscompression()
             debug.debug("Scanning for MAM compressed data, this can take a while.............")
-            if not os.path.isdir(self._config.MAM_DIR):
-                debug.error(self._config.MAM_DIR + " is not a directory. Please specify a mam dump directory (--mam-dir)")
+            if self._config.MAM_DIR and not os.path.isdir(self._config.MAM_DIR):
+                debug.error(self._config.MAM_DIR + " is not a directory. Please specify a mam dump directory (--mam_dir)")
 
             for offset in scanner_mam.scan(address_space):
                 pf_header = scanner_mam.carve_mam(address_space, offset, self._config.MAM_DIR)
