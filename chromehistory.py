@@ -38,36 +38,55 @@ import volatility.utils as utils
 import volatility.addrspace as addrspace
 import volatility.debug as debug
 import volatility.obj as obj
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.ciphers import Cipher
+from cryptography.hazmat.primitives.ciphers.algorithms import AES
+from cryptography.hazmat.primitives.ciphers.modes import CBC
 import binascii
 import sqlite_help
 import csv
-from Crypto.Cipher import AES
+# from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.hashes import SHA1
 
 FORWARD = sqlite_help.FORWARD
 BACKWARD = sqlite_help.BACKWARD
+
 
 # Function to get rid of padding
 def clean(x):
     """Strip the padding from the end of the AES decrypted string"""
     return x[:-ord(x[-1])]
 
+
 def decrypt_cookie_value(x, key):
     """Decrypts a cookie using the key provided"""
     encrypted_value = x
 
     # Trim off the 'v10' that Chrome/ium prepends
+    # encrypted_value = encrypted_value[3:]
+    #
+    # # Default values used by both Chrome and Chromium in OSX and Linux
+    # iv = b' ' * 16
+    #
+    # cipher = AES.new(key, AES.MODE_CBC, IV=iv)
+    #
+    # if len(encrypted_value) % 16:
+    #     return "INVALID_ENCRYPTED_LENGTH"
+    # decrypted = cipher.decrypt(encrypted_value)
+    # return clean(decrypted)
+
     encrypted_value = encrypted_value[3:]
+    init_vector = b' ' * 16
+    cipher = Cipher(
+        algorithm=AES(key), mode=CBC(init_vector), backend=default_backend()
+    )
+    decryptor = cipher.decryptor()
+    decrypted = decryptor.update(encrypted_value) + decryptor.finalize()
 
-    # Default values used by both Chrome and Chromium in OSX and Linux
-    iv = b' ' * 16
-
-    cipher = AES.new(key, AES.MODE_CBC, IV=iv)
-
-    if len(encrypted_value) % 16:
-        return "INVALID_ENCRYPTED_LENGTH"
-    decrypted = cipher.decrypt(encrypted_value)
     return clean(decrypted)
+
 
 # The visits table has a 32 bit integer with different bits representing different page transitions
 # details at https://github.com/jedesah/Chromium/blob/master/content/public/common/page_transition_types.h
@@ -125,19 +144,17 @@ def map_transition(t):
     return transition
 
 
-
 class ChromeScanner(scan.BaseScanner):
-    checks = [ ]
+    checks = []
 
-    def __init__(self, needles = None):
+    def __init__(self, needles=None):
         self.needles = needles
-        self.checks = [ ("MultiStringFinderCheck", {'needles':needles})]
+        self.checks = [("MultiStringFinderCheck", {'needles': needles})]
         scan.BaseScanner.__init__(self)
 
-    def scan(self, address_space, offset = 0, maxlen = None):
+    def scan(self, address_space, offset=0, maxlen=None):
         for offset in scan.BaseScanner.scan(self, address_space, offset, maxlen):
             yield offset
-
 
 
 class ChromeSearchTerms(common.AbstractWindowsCommand):
@@ -147,25 +164,28 @@ class ChromeSearchTerms(common.AbstractWindowsCommand):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
 
     def calculate(self):
-        address_space = utils.load_as(self._config, astype = 'physical')
+        address_space = utils.load_as(self._config, astype='physical')
 
-        scanner = ChromeScanner(needles = ['\x05\x01',
-                                           '\x05\x02',
-                                           '\x07\x01',
-                                           '\x07\x02',
-                                          ])
+        scanner = ChromeScanner(needles=['\x05\x01',
+                                         '\x05\x02',
+                                         '\x07\x01',
+                                         '\x07\x02',
+                                         ])
         keywords = {}
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-8, 800)
+            chrome_buff = address_space.read(offset - 8, 800)
             start = 8
 
             # value after 2 needles should be 1, 2, or 3
-            if (ord(chrome_buff[start+2]) not in (1,2,3)):
+            if (ord(chrome_buff[start + 2]) not in (1, 2, 3)):
                 continue
 
             # size of the first needle is determined by the varint starting at the 4th byte, which should be equal to the next varint as well
-            if ((chrome_buff[start] == "\x05" and 13 < ord(chrome_buff[start+3]) < 128 and chrome_buff[start+3] == chrome_buff[start+4]) or
-                (chrome_buff[start] == "\x07" and ord(chrome_buff[start+3]) > 128 and chrome_buff[start+3:start+5] == chrome_buff[start+5:start+7])):
+            if ((chrome_buff[start] == "\x05" and 13 < ord(chrome_buff[start + 3]) < 128 and chrome_buff[start + 3] ==
+                 chrome_buff[start + 4]) or
+                    (chrome_buff[start] == "\x07" and ord(chrome_buff[start + 3]) > 128 and chrome_buff[
+                                                                                            start + 3:start + 5] == chrome_buff[
+                                                                                                                    start + 5:start + 7])):
 
                 # row_id is before the needles
                 start -= 1
@@ -205,23 +225,23 @@ class ChromeSearchTerms(common.AbstractWindowsCommand):
                 start += varint_len
 
                 # keyword_id is first field
-                keyword_id = sqlite_help.sql_unpack(chrome_buff[start:start+keyword_id_length])
+                keyword_id = sqlite_help.sql_unpack(chrome_buff[start:start + keyword_id_length])
                 if keyword_id < 0:
                     continue
                 start += keyword_id_length
 
                 # url_id is the second field
-                url_id = sqlite_help.sql_unpack(chrome_buff[start:start+url_id_length])
+                url_id = sqlite_help.sql_unpack(chrome_buff[start:start + url_id_length])
                 if url_id < 0:
                     continue
                 start += url_id_length
 
                 # lower_term is the next field
-                lower_term = chrome_buff[start:start+lower_term_length]
+                lower_term = chrome_buff[start:start + lower_term_length]
                 start += lower_term_length
 
                 # term is the last field
-                term = chrome_buff[start:start+term_length]
+                term = chrome_buff[start:start + term_length]
 
                 # the two term fields should be the same if both are made lowercase
                 if lower_term != term.lower():
@@ -239,15 +259,15 @@ class ChromeSearchTerms(common.AbstractWindowsCommand):
             continue
 
     def render_text(self, outfd, data):
-        self.table_header(outfd, [("Row ID", "6"), ("Keyword ID", "10"), ("URL ID", "6"), ("Lowercase", "64"), ("Entered Text", "64")])
+        self.table_header(outfd, [("Row ID", "6"), ("Keyword ID", "10"), ("URL ID", "6"), ("Lowercase", "64"),
+                                  ("Entered Text", "64")])
         for row_id, keyword_id, url_id, lower_term, term in data:
             self.table_row(outfd, row_id, keyword_id, url_id, lower_term, term)
 
     def render_csv(self, outfd, data):
         outfd.write('"id","keyword_id","url_id","lower_term","term"\n')
         for d in data:
-            csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(d)
-
+            csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(d)
 
 
 class ChromeDownloads(common.AbstractWindowsCommand):
@@ -257,13 +277,13 @@ class ChromeDownloads(common.AbstractWindowsCommand):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
 
     def calculate(self):
-        address_space = utils.load_as(self._config, astype = 'physical')
+        address_space = utils.load_as(self._config, astype='physical')
 
-        scanner = ChromeScanner(needles = ['\x01\x01\x01',
-                                          ])
+        scanner = ChromeScanner(needles=['\x01\x01\x01',
+                                         ])
         downloads = {}
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-16, 3000)
+            chrome_buff = address_space.read(offset - 16, 3000)
             start = 16
             if ord(chrome_buff[19]) not in (1, 6) and ord(chrome_buff[20]) != 1:
                 continue
@@ -271,14 +291,14 @@ class ChromeDownloads(common.AbstractWindowsCommand):
             good = False
 
             # get all of the single byte lengths around the needle
-            (start_time_length, start_time) = sqlite_help.varint_type_to_length(ord(chrome_buff[start-3]))
-            (received_bytes_length, received_bytes) = sqlite_help.varint_type_to_length(ord(chrome_buff[start-2]))
-            (total_bytes_length, total_bytes) = sqlite_help.varint_type_to_length(ord(chrome_buff[start-1]))
+            (start_time_length, start_time) = sqlite_help.varint_type_to_length(ord(chrome_buff[start - 3]))
+            (received_bytes_length, received_bytes) = sqlite_help.varint_type_to_length(ord(chrome_buff[start - 2]))
+            (total_bytes_length, total_bytes) = sqlite_help.varint_type_to_length(ord(chrome_buff[start - 1]))
             (state_length, state) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-            (danger_type_length, danger_type) = sqlite_help.varint_type_to_length(ord(chrome_buff[start+1]))
-            (interrupt_reason_length, intterupt_reason) = sqlite_help.varint_type_to_length(ord(chrome_buff[start+2]))
-            (end_time_length, end_time) = sqlite_help.varint_type_to_length(ord(chrome_buff[start+3]))
-            (opened_length, opened) = sqlite_help.varint_type_to_length(ord(chrome_buff[start+4]))
+            (danger_type_length, danger_type) = sqlite_help.varint_type_to_length(ord(chrome_buff[start + 1]))
+            (interrupt_reason_length, intterupt_reason) = sqlite_help.varint_type_to_length(ord(chrome_buff[start + 2]))
+            (end_time_length, end_time) = sqlite_help.varint_type_to_length(ord(chrome_buff[start + 3]))
+            (opened_length, opened) = sqlite_help.varint_type_to_length(ord(chrome_buff[start + 4]))
 
             # go backwards from needle first
             start -= 4
@@ -287,7 +307,7 @@ class ChromeDownloads(common.AbstractWindowsCommand):
             if start_time_length not in (1, 6, 8) or end_time_length not in (1, 6, 8):
                 continue
 
-            if received_bytes_length not in range (0,7) or total_bytes_length not in range (0, 7):
+            if received_bytes_length not in range(0, 7) or total_bytes_length not in range(0, 7):
                 continue
 
             (target_path_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
@@ -385,104 +405,113 @@ class ChromeDownloads(common.AbstractWindowsCommand):
             # id field is 0 because it is actually stored in row_id above
             start += id_length
 
-            current_path = chrome_buff[start:start+current_path_length]
+            current_path = chrome_buff[start:start + current_path_length]
             start += current_path_length
 
-            target_path = chrome_buff[start:start+target_path_length]
+            target_path = chrome_buff[start:start + target_path_length]
             start += target_path_length
 
             # extract the time, unpack it to an integer, convert microseconds to string
-            start_time = chrome_buff[start:start+start_time_length]
+            start_time = chrome_buff[start:start + start_time_length]
             start_time = sqlite_help.sql_unpack(start_time)
             if start_time < 11900000000000000 or start_time > 17000000000000000:
                 continue
             start_time = sqlite_help.get_wintime_from_msec(start_time)
             start += start_time_length
 
-            received_bytes = chrome_buff[start:start+received_bytes_length]
+            received_bytes = chrome_buff[start:start + received_bytes_length]
             received_bytes = sqlite_help.sql_unpack(received_bytes)
             start += received_bytes_length
 
-            total_bytes = chrome_buff[start:start+total_bytes_length]
+            total_bytes = chrome_buff[start:start + total_bytes_length]
             total_bytes = sqlite_help.sql_unpack(total_bytes)
             start += total_bytes_length
 
-            state = ord(chrome_buff[start:start+state_length])
+            state = ord(chrome_buff[start:start + state_length])
             start += state_length
 
-            danger_type = ord(chrome_buff[start:start+danger_type_length])
+            danger_type = ord(chrome_buff[start:start + danger_type_length])
             start += danger_type_length
 
-            interrupt_reason = ord(chrome_buff[start:start+interrupt_reason_length])
+            interrupt_reason = ord(chrome_buff[start:start + interrupt_reason_length])
             start += interrupt_reason_length
 
             # extract the time, unpack it to an integer, convert microseconds to string
-            end_time = chrome_buff[start:start+end_time_length]
+            end_time = chrome_buff[start:start + end_time_length]
             end_time = sqlite_help.sql_unpack(end_time)
             end_time = sqlite_help.get_wintime_from_msec(end_time)
             start += end_time_length
 
-            opened = ord(chrome_buff[start:start+opened_length])
+            opened = ord(chrome_buff[start:start + opened_length])
             start += opened_length
 
-            referrer = chrome_buff[start:start+referrer_length]
+            referrer = chrome_buff[start:start + referrer_length]
             start += referrer_length
 
             by_ext_id = ""
             if by_ext_id_length:
-                by_ext_id = ord(chrome_buff[start:start+by_ext_id_length])
+                by_ext_id = ord(chrome_buff[start:start + by_ext_id_length])
             start += by_ext_id_length
 
             by_ext_name = ""
             if by_ext_name_length:
-                by_ext_name = chrome_buff[start:start+by_ext_name_length]
+                by_ext_name = chrome_buff[start:start + by_ext_name_length]
             start += by_ext_name_length
 
             etag = ""
             if etag_length:
-                etag = chrome_buff[start:start+etag_length]
+                etag = chrome_buff[start:start + etag_length]
             start += etag_length
 
             last_modified = ""
             if last_modified_length:
-                last_modified = chrome_buff[start:start+last_modified_length]
+                last_modified = chrome_buff[start:start + last_modified_length]
             start += last_modified_length
 
             mime_type = ""
             if mime_type_length:
-                mime_type = chrome_buff[start:start+mime_type_length]
+                mime_type = chrome_buff[start:start + mime_type_length]
             start += mime_type_length
 
             original_mime_type = ""
             if original_mime_type_length:
-                original_mime_type = chrome_buff[start:start+original_mime_type_length]
+                original_mime_type = chrome_buff[start:start + original_mime_type_length]
             start += original_mime_type_length
 
             # add all values as a tuple to the dictionary so we only print each unique record once
-            downloads_tuple = (row_id, current_path, target_path, start_time, received_bytes, total_bytes, state, danger_type, interrupt_reason, end_time, opened, referrer, by_ext_id, by_ext_name, etag, last_modified, mime_type, original_mime_type)
+            downloads_tuple = (
+            row_id, current_path, target_path, start_time, received_bytes, total_bytes, state, danger_type,
+            interrupt_reason, end_time, opened, referrer, by_ext_id, by_ext_name, etag, last_modified, mime_type,
+            original_mime_type)
             if not downloads.get(downloads_tuple):
                 downloads[downloads_tuple] = downloads.get(downloads_tuple, 0) + 1
                 yield downloads_tuple
 
     def render_text(self, outfd, data):
-        self.table_header(outfd, [("Row Id", "6"), ("Current Path", "80"), ("Target Path", "80"), ("Start Time", "26"), ("Received", "12"), ("Total Bytes", "12"), ("State", "5"), ("Danger", "6"), ("Interrupt", "9"), ("End Time", "26"), ("Opened", "6"), ("Referer", "64"), ("By Ext ID", "9"), ("By Ext Name", "10"), ("ETag", "24"), ("Last Modified", "30"), ("MIME Type", "32"), ("Original MIME Type", "32")])
+        self.table_header(outfd, [("Row Id", "6"), ("Current Path", "80"), ("Target Path", "80"), ("Start Time", "26"),
+                                  ("Received", "12"), ("Total Bytes", "12"), ("State", "5"), ("Danger", "6"),
+                                  ("Interrupt", "9"), ("End Time", "26"), ("Opened", "6"), ("Referer", "64"),
+                                  ("By Ext ID", "9"), ("By Ext Name", "10"), ("ETag", "24"), ("Last Modified", "30"),
+                                  ("MIME Type", "32"), ("Original MIME Type", "32")])
         for row_id, current_path, target_path, start_time, received_bytes, total_bytes, state, danger_type, interrupt_reason, end_time, opened, referrer, by_ext_id, by_ext_name, etag, last_modified, mime_type, orignal_mime_type in data:
-            self.table_row(outfd, row_id, current_path, target_path, str(start_time), received_bytes, total_bytes, state, danger_type, interrupt_reason, str(end_time), opened, referrer, by_ext_id, by_ext_name, etag, last_modified, mime_type, orignal_mime_type)
+            self.table_row(outfd, row_id, current_path, target_path, str(start_time), received_bytes, total_bytes,
+                           state, danger_type, interrupt_reason, str(end_time), opened, referrer, by_ext_id,
+                           by_ext_name, etag, last_modified, mime_type, orignal_mime_type)
 
     def render_csv(self, outfd, data):
-        outfd.write('"id","current_path","target_path","start_time","received_bytes","total_bytes","state","danger","interrupt","end_time","opened","referer","by_ext_id","by_ext_name","etag","last_modified","mime_type","original_mime_type"\n')
+        outfd.write(
+            '"id","current_path","target_path","start_time","received_bytes","total_bytes","state","danger","interrupt","end_time","opened","referer","by_ext_id","by_ext_name","etag","last_modified","mime_type","original_mime_type"\n')
         for d in data:
-            csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(d)
+            csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(d)
 
     def render_body(self, outfd, data):
         for row_id, current_path, target_path, start_time, received_bytes, total_bytes, state, danger_type, interrupt_reason, end_time, opened, referrer, by_ext_id, by_ext_name, etag, last_modified, mime_type, orignal_mime_type in data:
             start = sqlite_help.unix_time(start_time)
             end = sqlite_help.unix_time(end_time)
             download = referrer + " -> " + target_path + " (" + str(total_bytes) + " bytes"
-            download = download.replace("|","\\")
+            download = download.replace("|", "\\")
             d = (0, "[CHROMEDOWNLOADS] " + download, 0, "---------------", 0, 0, 0, end, end, end, start)
-            csv.writer(outfd,delimiter="|",quoting=csv.QUOTE_NONE).writerow(d)
-
+            csv.writer(outfd, delimiter="|", quoting=csv.QUOTE_NONE).writerow(d)
 
 
 class ChromeDownloadChains(common.AbstractWindowsCommand):
@@ -492,73 +521,76 @@ class ChromeDownloadChains(common.AbstractWindowsCommand):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
 
     def calculate(self):
-        address_space = utils.load_as(self._config, astype = 'physical')
+        address_space = utils.load_as(self._config, astype='physical')
 
-        scanner = ChromeScanner(needles = ['\x04\x01\x01',
-                                           '\x04\x02\x01',
-                                           '\x05\x01\x01',
-                                           '\x05\x02\x01',
-                                          ])
+        scanner = ChromeScanner(needles=['\x04\x01\x01',
+                                         '\x04\x02\x01',
+                                         '\x05\x01\x01',
+                                         '\x05\x02\x01',
+                                         ])
         download_chains = {}
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-8, 2100)
+            chrome_buff = address_space.read(offset - 8, 2100)
             start = 8
             # if the first needle (header_length) is 4; the varint is < 128, if it's 5, the varint is > 128
-            if (chrome_buff[start] == "\x04" and 13 < ord(chrome_buff[start+3]) < 128) or (chrome_buff[start] == "\x05" and ord(chrome_buff[start+3]) > 128):
+            if (chrome_buff[start] == "\x04" and 13 < ord(chrome_buff[start + 3]) < 128) or (
+                    chrome_buff[start] == "\x05" and ord(chrome_buff[start + 3]) > 128):
 
-                    good = False
+                good = False
 
-                    # row_id is before the needles
-                    start -= 1
-                    (row_id, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
-                    # can't have a negative row_id (index)
-                    if row_id < 0:
-                        continue
+                # row_id is before the needles
+                start -= 1
+                (row_id, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
+                # can't have a negative row_id (index)
+                if row_id < 0:
+                    continue
 
-                    # payload_length is length of sqlite record and the first item
-                    start -= varint_len
-                    if start < 0:
-                        continue
-                    (payload_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
+                # payload_length is length of sqlite record and the first item
+                start -= varint_len
+                if start < 0:
+                    continue
+                (payload_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
 
-                    # payload_length should be much longer than this, but this is a safe minimum
-                    if payload_length < 6:
-                        continue
+                # payload_length should be much longer than this, but this is a safe minimum
+                if payload_length < 6:
+                    continue
 
-                    # the next 3 bytes are the needle matches
-                    payload_header_length = ord(chrome_buff[8])
-                    chain_id_length = ord(chrome_buff[9])
-                    chain_index_length = ord(chrome_buff[10])
-                    start = 11
+                # the next 3 bytes are the needle matches
+                payload_header_length = ord(chrome_buff[8])
+                chain_id_length = ord(chrome_buff[9])
+                chain_index_length = ord(chrome_buff[10])
+                start = 11
 
-                    # url_length follows the needles
-                    (url_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, FORWARD)
-                    url_length = sqlite_help.varint_to_text_length(url_length)
-                    if url_length < 0 or url_length > 2100:
-                        continue
+                # url_length follows the needles
+                (url_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, FORWARD)
+                url_length = sqlite_help.varint_to_text_length(url_length)
+                if url_length < 0 or url_length > 2100:
+                    continue
 
-                    # chain_id is first field
-                    start += varint_len
-                    chain_id = sqlite_help.sql_unpack(chrome_buff[start:start+chain_id_length])
-                    if chain_id < 0:
-                        continue
+                # chain_id is first field
+                start += varint_len
+                chain_id = sqlite_help.sql_unpack(chrome_buff[start:start + chain_id_length])
+                if chain_id < 0:
+                    continue
 
-                    # chain index is the second field
-                    start += chain_id_length
-                    chain_index = sqlite_help.sql_unpack(chrome_buff[start:start+chain_index_length])
-                    if chain_index < 0:
-                        continue
+                # chain index is the second field
+                start += chain_id_length
+                chain_index = sqlite_help.sql_unpack(chrome_buff[start:start + chain_index_length])
+                if chain_index < 0:
+                    continue
 
-                    # url is the last field
-                    start += chain_index_length
-                    url = chrome_buff[start:start+url_length]
+                # url is the last field
+                start += chain_index_length
+                url = chrome_buff[start:start + url_length]
 
-                    if url[0:4] == "http" or url[0:3] == "ftp" or url[0:4] == "file" or url[0:6] == "chrome" or url[0:4] == "data" or url[0:5] == "about":
-                        # add the values as a tuple to a dictionary so we only print each unique record once
-                        chain_tuple = (row_id, chain_id, chain_index, url)
-                        if not download_chains.get(chain_tuple):
-                            download_chains[chain_tuple] = download_chains.get(chain_tuple, 0) + 1
-                            yield chain_tuple
+                if url[0:4] == "http" or url[0:3] == "ftp" or url[0:4] == "file" or url[0:6] == "chrome" or url[
+                                                                                                            0:4] == "data" or url[
+                                                                                                                              0:5] == "about":
+                    # add the values as a tuple to a dictionary so we only print each unique record once
+                    chain_tuple = (row_id, chain_id, chain_index, url)
+                    if not download_chains.get(chain_tuple):
+                        download_chains[chain_tuple] = download_chains.get(chain_tuple, 0) + 1
+                        yield chain_tuple
             continue
 
     def render_text(self, outfd, data):
@@ -569,8 +601,7 @@ class ChromeDownloadChains(common.AbstractWindowsCommand):
     def render_csv(self, outfd, data):
         outfd.write('"id","chain_id","chain_index","url"\n')
         for d in data:
-            csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(d)
-
+            csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(d)
 
 
 class ChromeHistory(common.AbstractWindowsCommand):
@@ -578,57 +609,41 @@ class ChromeHistory(common.AbstractWindowsCommand):
 
     def __init__(self, config, *args, **kwargs):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
-        config.add_option('NULLTIME', short_option = 'N', default = True,
-                          help = "Don't print entries with null timestamps",
-                          action = "store_false")
+        config.add_option('NULLTIME', short_option='N', default=True,
+                          help="Don't print entries with null timestamps",
+                          action="store_false")
 
     def calculate(self):
-        address_space = utils.load_as(self._config, astype = 'physical')
+        address_space = utils.load_as(self._config, astype='physical')
 
         # URLs
-        scanner = ChromeScanner(needles = ['\x08http',
-                                           '\x08file',
-                                           '\x08ftp',
-                                           '\x08chrome',
-                                           '\x08data',
-                                           '\x08about',
-                                           '\x01\x01http',
-                                           '\x01\x01file',
-                                           '\x01\x01ftp',
-                                           '\x01\x01chrome',
-                                           '\x01\x01data',
-                                           '\x01\x01about',
-                                          ])
+        scanner = ChromeScanner(needles=['\x01\x01http',
+                                         '\x01\x01file',
+                                         '\x01\x01ftp',
+                                         '\x01\x01chrome',
+                                         '\x01\x01data',
+                                         '\x01\x01about',
+                                         ])
         urls = {}
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-15, 4500)
+            chrome_buff = address_space.read(offset - 15, 4500)
             start = 15
-            favicon_id = "N/A"
-            favicon_id_length = 0
 
             # start before the needle match and work backwards, do sanity checks on some values before proceeding
-            if ord(chrome_buff[start-1]) not in (1,6):
+            if ord(chrome_buff[start - 1]) not in (1, 6):
                 continue
             start -= 1
             (last_visit_time_length, last_visit_time) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
 
-            if not (0 < ord(chrome_buff[start-1]) < 10):
+            if not (0 < ord(chrome_buff[start - 1]) < 4):
                 continue
             start -= 1
-            typed_count = None
-            if ord(chrome_buff[start]) in (8, 9):
-                (typed_count_length, typed_count) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-            else:
-                typed_count_length = ord(chrome_buff[start])
+            typed_count_length = ord(chrome_buff[start])
 
-            if not (0 < ord(chrome_buff[start-1]) < 10):
+            if not (0 < ord(chrome_buff[start - 1]) < 4):
                 continue
             start -= 1
-            visit_count = None
-            if ord(chrome_buff[start]) in (8, 9):
-                (visit_count_length, visit_count) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-            else:
-                visit_count_length = ord(chrome_buff[start])
+            visit_count_length = ord(chrome_buff[start])
 
             start -= 1
             (title_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
@@ -643,7 +658,6 @@ class ChromeHistory(common.AbstractWindowsCommand):
 
             start -= 1
             payload_header_length = ord(chrome_buff[start])
-            payload_header_end = start + payload_header_length
 
             start -= 1
             (row_id, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
@@ -661,32 +675,27 @@ class ChromeHistory(common.AbstractWindowsCommand):
                 continue
 
             # jump back to the index of the needle match
-            start = 15
-            (hidden_length, hidden) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-            start += 1
-            if start != payload_header_end:
-                (favicon_id_length, favicon_id) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-                start += 1
+            (hidden_length, hidden) = sqlite_help.varint_type_to_length(ord(chrome_buff[15]))
+            (favicon_id_length, favicon_id) = sqlite_help.varint_type_to_length(ord(chrome_buff[16]))
+            start = 17
 
-            url_id = sqlite_help.sql_unpack(chrome_buff[start:start+url_id_length])
+            url_id = sqlite_help.sql_unpack(chrome_buff[start:start + url_id_length])
 
             start += url_id_length
-            url = chrome_buff[start:start+url_length]
+            url = chrome_buff[start:start + url_length]
 
             start += url_length
-            title = chrome_buff[start:start+title_length]
+            title = chrome_buff[start:start + title_length]
 
             start += title_length
-            if visit_count is None:
-                visit_count = sqlite_help.sql_unpack(chrome_buff[start:start+visit_count_length])
+            visit_count = sqlite_help.sql_unpack(chrome_buff[start:start + visit_count_length])
 
             start += visit_count_length
-            if typed_count is None:
-                typed_count = sqlite_help.sql_unpack(chrome_buff[start:start+typed_count_length])
+            typed_count = sqlite_help.sql_unpack(chrome_buff[start:start + typed_count_length])
 
             # extract the time, unpack it to an integer, convert microseconds to string
             start += typed_count_length
-            last_visit_time = chrome_buff[start:start+last_visit_time_length]
+            last_visit_time = chrome_buff[start:start + last_visit_time_length]
             last_visit_time = sqlite_help.sql_unpack(last_visit_time)
             if type(last_visit_time) is str:
                 continue
@@ -695,11 +704,10 @@ class ChromeHistory(common.AbstractWindowsCommand):
                 continue
 
             start += last_visit_time_length
-            hidden = sqlite_help.sql_unpack(chrome_buff[start:start+hidden_length])
+            hidden = sqlite_help.sql_unpack(chrome_buff[start:start + hidden_length])
 
             start += hidden_length
-            if favicon_id_length > 0:
-                favicon_id = sqlite_help.sql_unpack(chrome_buff[start:start+favicon_id_length])
+            favicon_id = sqlite_help.sql_unpack(chrome_buff[start:start + favicon_id_length])
 
             # store the values as a tuple in a dictionary so we only print each unique record once
             url_tuple = (row_id, url, title, visit_count, typed_count, last_visit_time, hidden, favicon_id)
@@ -708,14 +716,15 @@ class ChromeHistory(common.AbstractWindowsCommand):
                 yield url_tuple
 
     def render_text(self, outfd, data):
-        self.table_header(outfd, [("Index", "6"), ("URL", "80"), ("Title", "80"), ("Visits", "6"), ("Typed", "5"), ("Last Visit Time", "26"), ("Hidden", "6"), ("Favicon ID", "10")])
+        self.table_header(outfd, [("Index", "6"), ("URL", "80"), ("Title", "80"), ("Visits", "6"), ("Typed", "5"),
+                                  ("Last Visit Time", "26"), ("Hidden", "6"), ("Favicon ID", "10")])
         for index, url, title, visit_count, typed_count, last_visit_time, hidden, favicon_id in data:
             self.table_row(outfd, index, url, title, visit_count, typed_count, str(last_visit_time), hidden, favicon_id)
 
     def render_csv(self, outfd, data):
         outfd.write('"index","url","title","visits","typed","last_visit_time","hidden","favicon_id"\n')
         for d in data:
-            csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(d)
+            csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(d)
 
     def render_body(self, outfd, data):
         for index, url, title, visit_count, typed_count, last_visit_time, hidden, favicon_id in data:
@@ -723,8 +732,7 @@ class ChromeHistory(common.AbstractWindowsCommand):
             name = url + " -- " + title
             name = name.replace("|", "-")
             d = (0, "[CHROMEHISTORY] " + name, 0, "---------------", 0, 0, 0, end, end, end, end)
-            csv.writer(outfd,delimiter="|",quoting=csv.QUOTE_NONE,escapechar="\\").writerow(d)
-
+            csv.writer(outfd, delimiter="|", quoting=csv.QUOTE_NONE, escapechar="\\").writerow(d)
 
 
 class ChromeCookies(common.AbstractWindowsCommand):
@@ -732,13 +740,13 @@ class ChromeCookies(common.AbstractWindowsCommand):
 
     def __init__(self, config, *args, **kwargs):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
-        config.add_option('KEY', short_option = 'K', default = False,
-                          help = "Password to generate PBKDF key to decrypt cookies",
-                          action = "store")
-        config.add_option('OS', short_option = 'O', default = False,
-                          help = "Manually specify OS, rather than obtaining from profile",
-                          choices = ('mac','linux','windows'),
-                          action = "store")
+        config.add_option('KEY', short_option='K', default=False,
+                          help="Password to generate PBKDF key to decrypt cookies",
+                          action="store")
+        config.add_option('OS', short_option='O', default=False,
+                          help="Manually specify OS, rather than obtaining from profile",
+                          choices=('mac', 'linux', 'windows'),
+                          action="store")
 
         self.key = False
         if self._config.OS:
@@ -755,7 +763,15 @@ class ChromeCookies(common.AbstractWindowsCommand):
             salt = b'saltysalt'
             length = 16
             iterations = 1
-            self.key = PBKDF2(b'peanuts', salt, length, iterations)
+            # self.key = PBKDF2(b'peanuts', salt, length, iterations)
+            kdf = PBKDF2HMAC(
+                algorithm=SHA1(),
+                backend=default_backend(),
+                iterations=iterations,
+                length=length,
+                salt=salt,
+            )
+            self.key = kdf.derive("1".encode("utf8"))
 
     @staticmethod
     def is_valid_profile(profile):
@@ -764,7 +780,7 @@ class ChromeCookies(common.AbstractWindowsCommand):
                 profile.metadata.get('os', 'unknown') == 'linux')
 
     def calculate(self):
-        address_space = utils.load_as(self._config, astype = 'physical')
+        address_space = utils.load_as(self._config, astype='physical')
 
         scanner = ChromeScanner(needles=['\x08\x06\x08\x08',
                                          '\x08\x06\x08\x09',
@@ -777,7 +793,7 @@ class ChromeCookies(common.AbstractWindowsCommand):
                                 )
         cookies = {}
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-22, 4096)
+            chrome_buff = address_space.read(offset - 22, 4096)
             start = 20
 
             # start from before the needle match and go backwards
@@ -836,30 +852,30 @@ class ChromeCookies(common.AbstractWindowsCommand):
                 start += varint_len
 
             (samesite_length, samesite) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-            (source_scheme_length, source_scheme) = sqlite_help.varint_type_to_length(ord(chrome_buff[start+1]))
+            (source_scheme_length, source_scheme) = sqlite_help.varint_type_to_length(ord(chrome_buff[start + 1]))
             start += 2
 
             if creation_utc_length > 0:
-                creation_utc = sqlite_help.sql_unpack(chrome_buff[start:start+creation_utc_length])
+                creation_utc = sqlite_help.sql_unpack(chrome_buff[start:start + creation_utc_length])
             if creation_utc < 11900000000000000 or creation_utc > 17000000000000000:
                 continue
             creation_utc = sqlite_help.get_wintime_from_msec(creation_utc)
             start += creation_utc_length
 
-            host_key = chrome_buff[start:start+host_key_length]
+            host_key = chrome_buff[start:start + host_key_length]
             start += host_key_length
 
-            name = chrome_buff[start:start+name_length]
+            name = chrome_buff[start:start + name_length]
             start += name_length
 
-            value = chrome_buff[start:start+value_length]
+            value = chrome_buff[start:start + value_length]
             start += value_length
 
-            path = chrome_buff[start:start+path_length]
+            path = chrome_buff[start:start + path_length]
             start += path_length
 
             # get the date the cookie expires to set it to "Never Expires"
-            expires_utc = sqlite_help.sql_unpack(chrome_buff[start:start+expires_utc_length])
+            expires_utc = sqlite_help.sql_unpack(chrome_buff[start:start + expires_utc_length])
             if type(expires_utc) != int:
                 continue
             if expires_utc > 0:
@@ -868,47 +884,59 @@ class ChromeCookies(common.AbstractWindowsCommand):
                 expires_utc = "Never Expires"
             start += expires_utc_length
 
-            secure = sqlite_help.sql_unpack(chrome_buff[start:start+secure_length])
-            start += secure_length
+            if secure_length > 0:
+                secure = sqlite_help.sql_unpack(chrome_buff[start:start + secure_length])
+                start += secure_length
 
-            httponly = sqlite_help.sql_unpack(chrome_buff[start:start+httponly_length])
-            start += httponly_length
+            if httponly_length > 0:
+                httponly = sqlite_help.sql_unpack(chrome_buff[start:start + httponly_length])
+                start += httponly_length
 
-            last_access_utc = sqlite_help.sql_unpack(chrome_buff[start:start+last_access_utc_length])
+            last_access_utc = sqlite_help.sql_unpack(chrome_buff[start:start + last_access_utc_length])
             last_access_utc = sqlite_help.get_wintime_from_msec(last_access_utc)
             start += last_access_utc_length
 
-            has_expires = sqlite_help.sql_unpack(chrome_buff[start:start+has_expires_length])
-            start += has_expires_length
+            if has_expires_length > 0:
+                has_expires = sqlite_help.sql_unpack(chrome_buff[start:start + has_expires_length])
+                start += has_expires_length
 
-            persistent = sqlite_help.sql_unpack(chrome_buff[start:start+persistent_length])
-            start += persistent_length
+            if persistent_length > 0:
+                persistent = sqlite_help.sql_unpack(chrome_buff[start:start + persistent_length])
+                start += persistent_length
 
-            priority = sqlite_help.sql_unpack(chrome_buff[start:start+priority_length])
-            start += priority_length
+            if priority_length > 0:
+                priority = sqlite_help.sql_unpack(chrome_buff[start:start + priority_length])
+                start += priority_length
 
             if encrypted_value_length > 0:
-                encrypted_value = chrome_buff[start:start+encrypted_value_length]
-                if encrypted_value[:3] == b'v10' and self.key:
+                encrypted_value = chrome_buff[start:start + encrypted_value_length]
+                if encrypted_value[:3] == b'v11' and self.key:
                     value = decrypt_cookie_value(encrypted_value, self.key)
                 encrypted_value = binascii.b2a_hex(encrypted_value)
                 start += encrypted_value_length
 
             # store the values as a tuple in a dictionary so we only print each record once
-            cookie_tuple = (creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent, priority, encrypted_value)
+            cookie_tuple = (
+            creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires,
+            persistent, priority, encrypted_value)
             if not cookies.get(cookie_tuple):
                 yield cookie_tuple
                 cookies[cookie_tuple] = cookies.get(cookie_tuple, 0) + 1
 
     def render_text(self, outfd, data):
-        self.table_header(outfd, [("Creation Time", "26"), ("Host Key", "32"), ("Name", "16"), ("Value", "80"), ("Path", "24"), ("Expires Time", "26"), ("Secure", "6"), ("HttpOnly", "8"), ("Last Access Time", "26"), ("Expires", "7"), ("Persistent", "10"), ("Priority", "10"), ("Encrypted Value", "80")])
+        self.table_header(outfd,
+                          [("Creation Time", "26"), ("Host Key", "32"), ("Name", "16"), ("Value", "80"), ("Path", "24"),
+                           ("Expires Time", "26"), ("Secure", "6"), ("HttpOnly", "8"), ("Last Access Time", "26"),
+                           ("Expires", "7"), ("Persistent", "10"), ("Priority", "10"), ("Encrypted Value", "80")])
         for creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent, priority, encrypted_value in data:
-            self.table_row(outfd, str(creation_utc), host_key, name, value, path, str(expires_utc), secure, httponly, str(last_access_utc), has_expires, persistent, priority, encrypted_value)
+            self.table_row(outfd, str(creation_utc), host_key, name, value, path, str(expires_utc), secure, httponly,
+                           str(last_access_utc), has_expires, persistent, priority, encrypted_value)
 
     def render_csv(self, outfd, data):
-        outfd.write('"creation_time","host_key","name","value","path","expires_time","secure","http_only","last_access_time","expires","persistent","priority","encrypted_value"\n')
+        outfd.write(
+            '"creation_time","host_key","name","value","path","expires_time","secure","http_only","last_access_time","expires","persistent","priority","encrypted_value"\n')
         for d in data:
-            csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(d)
+            csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(d)
 
     def render_body(self, outfd, data):
         for creation_utc, host_key, name, value, path, expires_utc, secure, httponly, last_access_utc, has_expires, persistent, priority, encrypted_value in data:
@@ -917,8 +945,7 @@ class ChromeCookies(common.AbstractWindowsCommand):
             cookie = host_key + " " + path + " " + name + " = " + value
             cookie = cookie.replace("|", "-")
             d = (0, "[CHROMECOOKIES] " + cookie, 0, "---------------", 0, 0, 0, access, create, access, create)
-            csv.writer(outfd,delimiter="|",quoting=csv.QUOTE_NONE,escapechar="\\").writerow(d)
-
+            csv.writer(outfd, delimiter="|", quoting=csv.QUOTE_NONE, escapechar="\\").writerow(d)
 
 
 class ChromeVisits(common.AbstractWindowsCommand):
@@ -926,42 +953,38 @@ class ChromeVisits(common.AbstractWindowsCommand):
 
     def __init__(self, config, *args, **kwargs):
         common.AbstractWindowsCommand.__init__(self, config, *args, **kwargs)
-        config.add_option('QUICK', short_option = 'Q', default = False,
-                          help = "Don't correlate Visits table with History table (faster)",
-                          action = "store_true")
+        config.add_option('QUICK', short_option='Q', default=False,
+                          help="Don't correlate Visits table with History table (faster)",
+                          action="store_true")
 
     def calculate(self):
-        address_space = utils.load_as(self._config, astype = 'physical')
+        address_space = utils.load_as(self._config, astype='physical')
 
-        scanner = ChromeScanner(needles = ['\x08\x00\x01\x06',
-                                           '\x08\x00\x02\x06',
-                                           '\x08\x00\x03\x06',
-                                           '\x08\x00\x08\x06',
-                                           '\x08\x00\x09\x06',
-                                           '\x09\x00\x01\x06',
-                                           '\x09\x00\x02\x06',
-                                           '\x09\x00\x03\x06',
-                                           '\x09\x00\x08\x06',
-                                           '\x09\x00\x09\x06',
-                                          ])
+        scanner = ChromeScanner(needles=['\x08\x00\x01\x06',
+                                         '\x08\x00\x02\x06',
+                                         '\x08\x00\x03\x06',
+                                         '\x09\x00\x01\x06',
+                                         '\x09\x00\x02\x06',
+                                         '\x09\x00\x03\x06',
+                                         ])
 
         history = {}
         if not self._config.QUICK:
-            for h in ChromeHistory(self._config,).calculate():
+            for h in ChromeHistory(self._config, ).calculate():
                 if history.get(h[0], 0) == 0 or h[5].year > 1601:
                     history[h[0]] = h[1:]
 
         visits = {}
-        #print "Scanning for Chrome files, this can take a while............."
+        # print "Scanning for Chrome files, this can take a while............."
         for offset in scanner.scan(address_space):
-            chrome_buff = address_space.read(offset-13, 150)
+            chrome_buff = address_space.read(offset - 13, 150)
 
             # sanity checks on a few other values
-            if ord(chrome_buff[17]) not in (1, 2, 3, 8, 9):
+            if ord(chrome_buff[17]) not in (1, 2, 3):
                 continue;
             if ord(chrome_buff[18]) not in (4, 5):
                 continue;
-            if ord(chrome_buff[19]) not in (1, 2, 3, 8, 9):
+            if ord(chrome_buff[19]) not in (1, 2, 3):
                 continue;
 
             # get the bytes around the needles, then work backwards
@@ -1004,55 +1027,62 @@ class ChromeVisits(common.AbstractWindowsCommand):
                 continue
 
             # visit_id INTEGER
-            visit_id = sqlite_help.sql_unpack(chrome_buff[start:start+visit_id_length])
+            visit_id = sqlite_help.sql_unpack(chrome_buff[start:start + visit_id_length])
 
             # url INTEGER (an id into the urls table)
             start += visit_id_length
-            url = sqlite_help.sql_unpack(chrome_buff[start:start+url_length])
+            url = sqlite_help.sql_unpack(chrome_buff[start:start + url_length])
 
             # visit_time INTEGER
             start += url_length
-            visit_time = sqlite_help.sql_unpack(chrome_buff[start:start+visit_time_length])
+            visit_time = sqlite_help.sql_unpack(chrome_buff[start:start + visit_time_length])
             visit_time = sqlite_help.get_wintime_from_msec(visit_time)
             if visit_time.year == 1601:
                 continue
 
             # from_visit INTEGER
             start += visit_time_length
-            from_visit = sqlite_help.sql_unpack(chrome_buff[start:start+from_visit_length])
+            from_visit = sqlite_help.sql_unpack(chrome_buff[start:start + from_visit_length])
 
             # transition INTEGER
             start += from_visit_length
-            transition = sqlite_help.sql_unpack(chrome_buff[start:start+transition_length])
+            transition = sqlite_help.sql_unpack(chrome_buff[start:start + transition_length])
 
             # segment_id INTEGER
             start += transition_length
-            segment_id = sqlite_help.sql_unpack(chrome_buff[start:start+segment_id_length])
+            segment_id = sqlite_help.sql_unpack(chrome_buff[start:start + segment_id_length])
 
             # is_index INTEGER
             start += segment_id_length
             if payload_header_length == 9:
-                is_indexed = sqlite_help.sql_unpack(chrome_buff[start:start+is_indexed_length])
+                is_indexed = sqlite_help.sql_unpack(chrome_buff[start:start + is_indexed_length])
 
                 # visit_duration INTEGER
                 start += is_indexed_length
             if visit_duration_length:
-                visit_duration = sqlite_help.sql_unpack(chrome_buff[start:start+visit_duration_length])
+                visit_duration = sqlite_help.sql_unpack(chrome_buff[start:start + visit_duration_length])
 
             # store all the fields as a tuple to eliminate printing duplicates
             if payload_header_length == 9:
-                visit_tuple = (row_id, url, visit_time, from_visit, map_transition(transition), segment_id, is_indexed, visit_duration)
+                visit_tuple = (
+                row_id, url, visit_time, from_visit, map_transition(transition), segment_id, is_indexed, visit_duration)
             else:
-                visit_tuple = (row_id, url, visit_time, from_visit, map_transition(transition), segment_id, "n/a", visit_duration)
+                visit_tuple = (
+                row_id, url, visit_time, from_visit, map_transition(transition), segment_id, "n/a", visit_duration)
             if not visits.get(visit_tuple):
-                yield visit_tuple, history.get(url,"")
+                yield visit_tuple, history.get(url, "")
                 visits[visit_tuple] = visits.get(visit_tuple, 0) + 1
 
     def render_text(self, outfd, data):
         if self._config.QUICK:
-            self.table_header(outfd, [("Visit ID", "8"), ("URL ID", "6"), ("Visit Time", "26"), ("From Visit", "10"), ("Transition", "60"), ("Segment ID", "10"), ("Is Indexed", "10"), ("Visit Duration", "13")])
+            self.table_header(outfd, [("Visit ID", "8"), ("URL ID", "6"), ("Visit Time", "26"), ("From Visit", "10"),
+                                      ("Transition", "60"), ("Segment ID", "10"), ("Is Indexed", "10"),
+                                      ("Visit Duration", "13")])
         else:
-            self.table_header(outfd, [("Visit ID", "8"), ("URL ID", "6"), ("Visit Time", "26"), ("From Visit", "10"), ("Transition", "60"), ("Segment ID", "10"), ("Is Indexed", "10"), ("Visit Duration", "13"), ("URL", "80"), ("Title", "80"), ("Visits", "6"), ("Typed", "5"), ("Last Visit Time", "26"), ("Hidden", "6"), ("Favicon ID", "10")])
+            self.table_header(outfd, [("Visit ID", "8"), ("URL ID", "6"), ("Visit Time", "26"), ("From Visit", "10"),
+                                      ("Transition", "60"), ("Segment ID", "10"), ("Is Indexed", "10"),
+                                      ("Visit Duration", "13"), ("URL", "80"), ("Title", "80"), ("Visits", "6"),
+                                      ("Typed", "5"), ("Last Visit Time", "26"), ("Hidden", "6"), ("Favicon ID", "10")])
 
         # the length of the two tuples will be 15 if the history records were searched as well
         # the length will be 8 if the QUICK option was used
@@ -1060,21 +1090,26 @@ class ChromeVisits(common.AbstractWindowsCommand):
             if len(v_data) + len(h_data) == 15:
                 (visit_id, url_id, visit_time, from_visit, transition, segment_id, is_indexed, visit_duration) = v_data
                 (url, title, visit_count, typed_count, last_visit_time, hidden, favicon_id) = h_data
-                self.table_row(outfd, visit_id, url_id, str(visit_time), from_visit, transition, segment_id, is_indexed, visit_duration, url, title, visit_count, typed_count, str(last_visit_time), hidden, favicon_id)
+                self.table_row(outfd, visit_id, url_id, str(visit_time), from_visit, transition, segment_id, is_indexed,
+                               visit_duration, url, title, visit_count, typed_count, str(last_visit_time), hidden,
+                               favicon_id)
             elif len(v_data) + len(h_data) == 8:
                 (visit_id, url_id, visit_time, from_visit, transition, segment_id, is_indexed, visit_duration) = v_data
-                self.table_row(outfd, visit_id, url_id, str(visit_time), from_visit, transition, segment_id, is_indexed, visit_duration)
+                self.table_row(outfd, visit_id, url_id, str(visit_time), from_visit, transition, segment_id, is_indexed,
+                               visit_duration)
 
     def render_csv(self, outfd, data):
         if self._config.QUICK:
-            outfd.write('"id","url_id","visit_time","from_visit","transition","segment_id","is_indexed","visit_duration"\n')
+            outfd.write(
+                '"id","url_id","visit_time","from_visit","transition","segment_id","is_indexed","visit_duration"\n')
         else:
-            outfd.write('"id","url_id","visit_time","from_visit","transition","segment_id","is_indexed","visit_duration","url","title","visits","typed","last_visit_time","hidden","favicon_id"\n')
+            outfd.write(
+                '"id","url_id","visit_time","from_visit","transition","segment_id","is_indexed","visit_duration","url","title","visits","typed","last_visit_time","hidden","favicon_id"\n')
         for h_d, v_d in data:
             if len(v_d) == 7:
-                csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(h_d + v_d)
+                csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(h_d + v_d)
             else:
-                csv.writer(outfd,quoting=csv.QUOTE_ALL).writerow(h_d)
+                csv.writer(outfd, quoting=csv.QUOTE_ALL).writerow(h_d)
 
     def render_body(self, outfd, data):
         for v_data, h_data in data:
@@ -1088,11 +1123,11 @@ class ChromeVisits(common.AbstractWindowsCommand):
                 visit = url + " -- " + title + " -- " + transition
                 visit = visit.replace("|", "-")
                 d = (0, "[CHROMEVISITS] " + visit, 0, "---------------", 0, 0, 0, last_visit, 0, 0, visit_t)
-                csv.writer(outfd,delimiter="|",quoting=csv.QUOTE_NONE,escapechar="\\").writerow(d)
+                csv.writer(outfd, delimiter="|", quoting=csv.QUOTE_NONE, escapechar="\\").writerow(d)
             elif len(v_data) + len(h_data) == 8:
                 (visit_id, url_id, visit_time, from_visit, transition, segment_id, is_indexed, visit_duration) = v_data
                 visit_t = sqlite_help.unix_time(visit_time)
                 visit = str(url_id) + " -- " + transition
                 visit = visit.replace("|", "-")
                 d = (0, "[CHROMEVISITS] " + visit, 0, "---------------", 0, 0, 0, 0, 0, 0, visit_t)
-                csv.writer(outfd,delimiter="|",quoting=csv.QUOTE_NONE,escapechar="\\").writerow(d)
+                csv.writer(outfd, delimiter="|", quoting=csv.QUOTE_NONE, escapechar="\\").writerow(d)
