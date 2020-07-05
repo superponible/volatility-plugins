@@ -38,17 +38,11 @@ import volatility.utils as utils
 import volatility.addrspace as addrspace
 import volatility.debug as debug
 import volatility.obj as obj
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers import Cipher
-from cryptography.hazmat.primitives.ciphers.algorithms import AES
-from cryptography.hazmat.primitives.ciphers.modes import CBC
 import binascii
 import sqlite_help
 import csv
-# from Crypto.Cipher import AES
+from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives.hashes import SHA1
 
 FORWARD = sqlite_help.FORWARD
 BACKWARD = sqlite_help.BACKWARD
@@ -65,26 +59,16 @@ def decrypt_cookie_value(x, key):
     encrypted_value = x
 
     # Trim off the 'v10' that Chrome/ium prepends
-    # encrypted_value = encrypted_value[3:]
-    #
-    # # Default values used by both Chrome and Chromium in OSX and Linux
-    # iv = b' ' * 16
-    #
-    # cipher = AES.new(key, AES.MODE_CBC, IV=iv)
-    #
-    # if len(encrypted_value) % 16:
-    #     return "INVALID_ENCRYPTED_LENGTH"
-    # decrypted = cipher.decrypt(encrypted_value)
-    # return clean(decrypted)
-
     encrypted_value = encrypted_value[3:]
-    init_vector = b' ' * 16
-    cipher = Cipher(
-        algorithm=AES(key), mode=CBC(init_vector), backend=default_backend()
-    )
-    decryptor = cipher.decryptor()
-    decrypted = decryptor.update(encrypted_value) + decryptor.finalize()
 
+    # Default values used by both Chrome and Chromium in OSX and Linux
+    iv = b' ' * 16
+
+    cipher = AES.new(key, AES.MODE_CBC, IV=iv)
+
+    if len(encrypted_value) % 16:
+        return "INVALID_ENCRYPTED_LENGTH"
+    decrypted = cipher.decrypt(encrypted_value)
     return clean(decrypted)
 
 
@@ -763,15 +747,7 @@ class ChromeCookies(common.AbstractWindowsCommand):
             salt = b'saltysalt'
             length = 16
             iterations = 1
-            # self.key = PBKDF2(b'peanuts', salt, length, iterations)
-            kdf = PBKDF2HMAC(
-                algorithm=SHA1(),
-                backend=default_backend(),
-                iterations=iterations,
-                length=length,
-                salt=salt,
-            )
-            self.key = kdf.derive("1".encode("utf8"))
+            self.key = PBKDF2(b'peanuts', salt, length, iterations)
 
     @staticmethod
     def is_valid_profile(profile):
@@ -791,13 +767,14 @@ class ChromeCookies(common.AbstractWindowsCommand):
                                          '\x09\x06\x09\x08',
                                          '\x09\x06\x09\x09']
                                 )
+        # scanner = ChromeScanner(needles=['\x08\x06\x09\x09\x01'])
         cookies = {}
         for offset in scanner.scan(address_space):
             chrome_buff = address_space.read(offset - 22, 4096)
-            start = 20
+            start = 19
 
             # start from before the needle match and go backwards
-            start -= 1
+            # start -= 1
             (path_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
             path_length = sqlite_help.varint_to_text_length(path_length)
 
@@ -815,7 +792,6 @@ class ChromeCookies(common.AbstractWindowsCommand):
 
             start -= varint_len
             (creation_utc_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
-            creation_utc_length = 8
 
             start -= varint_len
             (payload_header_length, varint_len) = sqlite_help.find_varint(chrome_buff, start, BACKWARD)
@@ -851,11 +827,11 @@ class ChromeCookies(common.AbstractWindowsCommand):
                 encrypted_value_length = sqlite_help.varint_to_blob_length(encrypted_value_length)
                 start += varint_len
 
-            (samesite_length, samesite) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
-            (source_scheme_length, source_scheme) = sqlite_help.varint_type_to_length(ord(chrome_buff[start + 1]))
-            start += 2
+            (firstpartyonly_length, firstpartyonly) = sqlite_help.varint_type_to_length(ord(chrome_buff[start]))
+            start += 1
 
             if creation_utc_length > 0:
+                creation_utc_length = 8
                 creation_utc = sqlite_help.sql_unpack(chrome_buff[start:start + creation_utc_length])
             if creation_utc < 11900000000000000 or creation_utc > 17000000000000000:
                 continue
@@ -910,7 +886,7 @@ class ChromeCookies(common.AbstractWindowsCommand):
 
             if encrypted_value_length > 0:
                 encrypted_value = chrome_buff[start:start + encrypted_value_length]
-                if encrypted_value[:3] == b'v11' and self.key:
+                if encrypted_value[:3] == b'v10' and self.key:
                     value = decrypt_cookie_value(encrypted_value, self.key)
                 encrypted_value = binascii.b2a_hex(encrypted_value)
                 start += encrypted_value_length
