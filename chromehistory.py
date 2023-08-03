@@ -40,9 +40,9 @@ import volatility.debug as debug
 import volatility.obj as obj
 import binascii
 import sqlite_help
-import csv
+#import csv
 from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import PBKDF2
+#from Crypto.Protocol.KDF import PBKDF2
 
 FORWARD = sqlite_help.FORWARD
 BACKWARD = sqlite_help.BACKWARD
