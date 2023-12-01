@@ -35,7 +35,7 @@ import volatility.debug as debug
 import volatility.obj as obj
 import binascii
 import sqlite_help
-import csv
+#import csv
 from datetime import datetime
 
 FORWARD = sqlite_help.FORWARD
